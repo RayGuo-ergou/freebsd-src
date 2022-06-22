@@ -37,6 +37,7 @@ __FBSDID("$FreeBSD$");
 #include "opt_tcpdebug.h"
 
 #include <sys/param.h>
+#include <sys/kdb.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
@@ -69,6 +70,8 @@ __FBSDID("$FreeBSD$");
 #include <netinet/tcp_seq.h>
 #include <netinet/tcp_timer.h>
 #include <netinet/tcp_var.h>
+#include <netinet/mptcp_var.h>
+
 #include <netinet6/tcp6_var.h>
 #include <netinet/tcpip.h>
 
@@ -97,6 +100,7 @@ tcp_reass(struct tcpcb *tp, struct tcphdr *th, int *tlenp, struct mbuf *m)
 {
 	struct socket *so = tp->t_inpcb->inp_socket;
 	struct mbuf *mq, *mp;
+	struct mbuf *last_seg;
 	int flags, wakeup;
 
 	INP_WLOCK_ASSERT(tp->t_inpcb);
@@ -214,42 +218,71 @@ tcp_reass(struct tcpcb *tp, struct tcphdr *th, int *tlenp, struct mbuf *m)
 		mq = nq;
 	}
 
+	/* Insert the new segment queue entry into place. */
+//	if (mp) {
+//		if (M_TCPHDR(mp)->th_seq + mp->m_pkthdr.len == th->th_seq)
+//			m_catpkt(mp, m);
+//		else {
+//			m->m_nextpkt = mp->m_nextpkt;
+//			mp->m_nextpkt = m;
+//			m->m_pkthdr.pkt_tcphdr = th;
+//		}
+//	} else {
+//		mq = tp->t_segq;
+//		tp->t_segq = m;
+//		if (mq && th->th_seq + *tlenp == M_TCPHDR(mq)->th_seq) {
+//			m->m_nextpkt = mq->m_nextpkt;
+//			mq->m_nextpkt = NULL;
+//			m_catpkt(m, mq);
+//		} else
+//			m->m_nextpkt = mq;
+//		m->m_pkthdr.pkt_tcphdr = th;
+//	}
+
 	/*
-	 * Insert the new segment queue entry into place.  Try to collapse
-	 * mbuf chains if segments are adjacent.
+	 * Insert the new segment queue entry into place.
+     *
+     * XXXNJW: Segments that are adjacent at TCP-level might not represent
+     * contiguous bytes at the data-level, thus don't collapse the segments
+     * in MPTCP, as we need to retain the mbuf header and DSN tag for later
+     * data-level reassembly
 	 */
 	if (mp) {
-		if (M_TCPHDR(mp)->th_seq + mp->m_pkthdr.len == th->th_seq)
-			m_catpkt(mp, m);
-		else {
-			m->m_nextpkt = mp->m_nextpkt;
-			mp->m_nextpkt = m;
-			m->m_pkthdr.pkt_tcphdr = th;
-		}
+		m->m_nextpkt = mp->m_nextpkt;
+		mp->m_nextpkt = m;
 	} else {
 		mq = tp->t_segq;
 		tp->t_segq = m;
-		if (mq && th->th_seq + *tlenp == M_TCPHDR(mq)->th_seq) {
-			m->m_nextpkt = mq->m_nextpkt;
-			mq->m_nextpkt = NULL;
-			m_catpkt(m, mq);
-		} else
-			m->m_nextpkt = mq;
+		m->m_nextpkt = mq;
 		m->m_pkthdr.pkt_tcphdr = th;
 	}
 	tp->t_segqlen += *tlenp;
 
 present:
+
+//    if (th) {
+//		if (th->th_seq != tp->rcv_nxt)
+//			printf("%s: present - rcv_nxt %u tseq %u tp %p\n", __func__,
+//				tp->rcv_nxt, th->th_seq, tp);
+//    }
+
+//
+//    if(tp->t_segq)
+//    	printf("%s: first seg %u\n", __func__,
+//    	    (uint32_t) M_TCPHDR(tp->t_segq)->th_seq);
+
 	/*
-	 * Present data to user, advancing rcv_nxt through
+	 * Adjust accounting advancing rcv_nxt through
 	 * completed sequence space.
 	 */
 	if (!TCPS_HAVEESTABLISHED(tp->t_state))
 		return (0);
 
+	KASSERT(tp->t_segq_received == NULL,
+	    ("%s: t_segq_received not NULL\n", __func__));
+
+    wakeup = 0;
 	flags = 0;
-	wakeup = 0;
-	SOCKBUF_LOCK(&so->so_rcv);
 	while ((mq = tp->t_segq) != NULL &&
 	    M_TCPHDR(mq)->th_seq == tp->rcv_nxt) {
 		tp->t_segq = mq->m_nextpkt;
@@ -262,14 +295,47 @@ present:
 			m_freem(mq);
 		else {
 			mq->m_nextpkt = NULL;
-			sbappendstream_locked(&so->so_rcv, mq, 0);
-			wakeup = 1;
+			/* Now queue up the segment in the received list. On return
+			 * t_segq_received is assigned to a local-scope pointer and
+			 * set to NULL. The pointer is enqueued in mp_input_segq */
+			if (tp->t_segq_received) {
+				last_seg->m_nextpkt = mq;
+				last_seg = mq;
+			} else {
+				tp->t_segq_received = mq;
+				last_seg = tp->t_segq_received;
+			}
 		}
 	}
-	ND6_HINT(tp);
-	if (wakeup)
-		sorwakeup_locked(so);
-	else
-		SOCKBUF_UNLOCK(&so->so_rcv);
+
 	return (flags);
 }
+
+
+
+/* cleanup segments that have been bypassed (e.g. due to rexmit
+ * The mp_reass code might actually do something like this for us,
+ * since insertion of the segment into the data-level list will trim/drop
+ * segments.
+ *
+ * NB: very late segments will still need to be handled in mp_reass (i.e. if
+ * they are less than ds_rcv_nxt)
+ *
+ */
+
+///* Get mbuf tag with DSN */
+//mtag =  m_tag_locate(mq, PACKET_COOKIE_MPTCP, PACKET_TAG_DSN, NULL);
+//KASSERT(mtag != NULL, ("%s segment %u missing an mbuf tag\n",
+//    __func__, th->th_seq));
+//m_dsn = ((struct dsn_tag *)mtag)->dsn;
+//
+///* Has this segment been bypassed at the data-level, and already
+// * acked at the subflow level? */
+//if (m_dsn < tp->t_mpcb->ds_rcv_nxt &&
+//    M_TCPHDR(mq)->th_seq < tp->rcv_nxt) {
+//	tp->t_segq = mq->m_nextpkt;
+//	tp->t_segqlen -= mq->m_pkthdr.len;
+//	m_freem(mq);
+//	continue;
+//}
+

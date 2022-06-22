@@ -42,9 +42,12 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/callout.h>
 #include <sys/hhook.h>
+#include <sys/kdb.h>
 #include <sys/kernel.h>
 #include <sys/khelp.h>
+#include <sys/limits.h>
 #include <sys/sysctl.h>
+#include <sys/taskqueue.h>
 #include <sys/jail.h>
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
@@ -53,6 +56,7 @@ __FBSDID("$FreeBSD$");
 #endif
 #include <sys/priv.h>
 #include <sys/proc.h>
+#include <sys/queue.h>
 #include <sys/sdt.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
@@ -92,6 +96,9 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/tcp6_var.h>
 #endif
 #include <netinet/tcpip.h>
+#include <netinet/mptcp_var.h>
+#include <netinet/mptcp_pcb.h>
+#include <crypto/sha1.h>
 #ifdef TCPDEBUG
 #include <netinet/tcp_debug.h>
 #endif
@@ -166,6 +173,11 @@ SYSCTL_PROC(_net_inet_tcp, TCPCTL_V6MSSDFLT, v6mssdflt,
    "Default TCP Maximum Segment Size for IPv6");
 #endif /* INET6 */
 
+VNET_DEFINE(unsigned int, tcp_override_isn) = 0;
+SYSCTL_UINT(_net_inet_tcp, OID_AUTO, override_isn, CTLFLAG_RW,
+    &VNET_NAME(tcp_override_isn), 0,
+    "Manually set the initial sequence number of TCP flows");
+
 /*
  * Minimum MSS we accept and use. This prevents DoS attacks where
  * we are forced to a ridiculous low MSS like 20 and send hundreds
@@ -214,6 +226,12 @@ SYSCTL_INT(_net_inet_tcp, OID_AUTO, isn_reseed_interval, CTLFLAG_VNET | CTLFLAG_
 static int	tcp_soreceive_stream;
 SYSCTL_INT(_net_inet_tcp, OID_AUTO, soreceive_stream, CTLFLAG_RDTUN,
     &tcp_soreceive_stream, 0, "Using soreceive_stream for TCP sockets");
+
+VNET_DEFINE(int, tcp_do_mptcp) = 1;
+SYSCTL_INT(_net_inet_tcp, OID_AUTO, mptcp, CTLFLAG_RW,
+    &VNET_NAME(tcp_do_mptcp), 0,
+    "Enable Multipath Support");
+
 
 #ifdef TCP_SIGNATURE
 static int	tcp_sig_checksigs = 1;
@@ -373,6 +391,10 @@ tcp_init(void)
 	uma_zone_set_max(V_tcpcb_zone, maxsockets);
 	uma_zone_set_warning(V_tcpcb_zone, "kern.ipc.maxsockets limit reached");
 
+	/* mptcp init */
+	mpp_init();
+	mp_init();
+
 	tcp_tw_init();
 	syncache_init();
 	tcp_hc_init();
@@ -436,6 +458,8 @@ tcp_destroy(void)
 	syncache_destroy();
 	tcp_tw_destroy();
 	in_pcbinfo_destroy(&V_tcbinfo);
+	mp_destroy();
+
 	uma_zdestroy(V_sack_hole_zone);
 	uma_zdestroy(V_tcpcb_zone);
 
@@ -809,6 +833,10 @@ tcp_newtcpcb(struct inpcb *inp)
 	in_pcbref(inp);	/* Reference for tcpcb */
 	tp->t_inpcb = inp;
 
+	/* dss map queue */
+	TAILQ_INIT(&tp->t_send_maps.dsmap_list);
+	TAILQ_INIT(&tp->t_rcv_maps.dsmap_list);
+
 	/*
 	 * Init srtt to TCPTV_SRTTBASE (0), so we can tell that we have no
 	 * rtt estimate.  Set rttvar so that srtt + 4 * rttvar gives
@@ -827,8 +855,36 @@ tcp_newtcpcb(struct inpcb *inp)
 	 * which may match an IPv4-mapped IPv6 address.
 	 */
 	inp->inp_ip_ttl = V_ip_defttl;
-	inp->inp_ppcb = tp;
-	return (tp);		/* XXX */
+	inp->inp_ppcb = tp;	/* XXX */
+	return (tp);
+}
+
+/* The mappings always start from beginning of the send buffer, and the
+ * maps are placed into the list in sequence order. */
+void
+dsmap_drop(struct dsmapq_head *dsmap_list, tcp_seq th_ack, int len)
+{
+	struct ds_map *map;
+
+    map = TAILQ_FIRST(dsmap_list);
+    while (len > 0) {
+    	KASSERT(map != NULL, ("%s: no send map, len %d", __func__, len));
+    	KASSERT(map->ds_map_remain >= len || TAILQ_NEXT(map, sf_ds_map_next),
+    	        ("%s: drop len %d greater than mapped bytes\n", __func__, len));
+
+		if (map->ds_map_remain > len) {
+			map->ds_map_remain -= len;
+			//map->sf_seq_start = th_ack;
+			break;
+		}
+		len -= map->ds_map_remain;
+
+		struct ds_map *n;
+		n = TAILQ_NEXT(map, sf_ds_map_next);
+		TAILQ_REMOVE(dsmap_list, map, sf_ds_map_next);
+		free(map, M_DSSMAP);
+		map = n;
+	}
 }
 
 /*
@@ -893,6 +949,55 @@ tcp_ccalgounload(struct cc_algo *unload_algo)
 
 	return (0);
 }
+
+/*
+ * Switch CC algorithm to the passed-in algorithm. Should verify that the algo
+ * exists and the module is loaded before calling this function.
+ *
+ * XXXNJW: Not sure what happens in terms of the new algo initialising in
+ * 'slow-start' phase or similar. Perhaps the algorithms will sort themselves
+ * out using the data passed in by cc_var.
+ */
+//int
+//tcp_ccalgoswitch(struct cc_algo *new_algo, struct tcpcb *tp)
+//{
+//    struct inpcb *inp = tp->t_inpcb;
+//    struct cc_algo *old_algo;
+//    struct cc_var new_ccv;
+//
+//    INP_WLOCK(inp);
+//
+//    if (!(inp->inp_flags & INP_TIMEWAIT)) {
+//    	old_algo = CC_ALGO(tp);
+//
+//    	/* Attempt to initialise the new algorithm before switching. Failure
+//    	 * to initialise cc_data for the new CC algorithm will result in
+//    	 * returning with the original CC algorithm still configured. */
+//		if (new_algo->cb_init != NULL) {
+//			if (new_algo->cb_init(&new_ccv) > 0) {
+//				INP_WUNLOCK(inp);
+//				return ENOMEM;
+//			}
+//
+//			/* Remove any memory allocated by the previous CC algorithm. This
+//			 * ONLY clears memory pointed to by cc_data in the cc_var struct.
+//			 * i.e. all other ccv data will stay the same.
+//			 */
+//			if (old_algo->cb_destroy != NULL)
+//				old_algo->cb_destroy(tp->ccv);
+//
+//			/* Set pointer to newly initialised cc_data */
+//			tp->ccv->cc_data = new_ccv.cc_data;
+//		}
+//
+//		/* Switch over to the new algorithm */
+//		CC_ALGO(tp) = new_algo;
+//    }
+//
+//    INP_WUNLOCK(inp);
+//
+//    return 0;
+//}
 
 /*
  * Drop a TCP connection, reporting
@@ -1001,8 +1106,20 @@ tcp_discardcb(struct tcpcb *tp)
 		tcp_hc_update(&inp->inp_inc, &metrics);
 	}
 
-	/* free the reassembly queue, if any */
+	/* free the reassembly queue, if any
+	 * XXXNJW: If a subflow has called into tcp_discard, could we still need
+	 * to retain the segments, in cases where there is some disorder and these
+	 * segments will be needed to reassemble later? */
 	tcp_reass_flush(tp);
+
+	/* free ds_maps from t_rxmaps */
+	struct ds_map *n1, *n2;
+	n1 = TAILQ_FIRST(&tp->t_rcv_maps.dsmap_list);
+    while (n1 != NULL) {
+            n2 = TAILQ_NEXT(n1, sf_ds_map_next);
+            free(n1, M_DSSMAP);
+            n1 = n2;
+    }
 
 #ifdef TCP_OFFLOAD
 	/* Disconnect offload device, if any. */

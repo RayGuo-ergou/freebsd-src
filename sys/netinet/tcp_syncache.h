@@ -41,6 +41,8 @@ void	syncache_destroy(void);
 void	 syncache_unreach(struct in_conninfo *, struct tcphdr *);
 int	 syncache_expand(struct in_conninfo *, struct tcpopt *,
 	     struct tcphdr *, struct socket **, struct mbuf *);
+int	 syncache_expand_subflow(struct in_conninfo *, struct tcpopt *,
+	     struct tcphdr *, struct socket **, struct mbuf *);
 void	 syncache_add(struct in_conninfo *, struct tcpopt *,
 	     struct tcphdr *, struct inpcb *, struct socket **, struct mbuf *,
 	     void *, void *);
@@ -77,6 +79,25 @@ struct syncache {
 
 	void		*sc_pspare;		/* TCP_SIGNATURE */
 	u_int32_t	sc_spare[2];		/* UTO */
+
+/* MULTIPATH TCP */
+	uint64_t	sc_ds_iss;		/* initial data sequence num */
+	uint64_t	sc_ds_irs;		/* initial receive sequence num */
+	u_int64_t	sc_remote_key;
+	u_int64_t	sc_local_key;
+	uint32_t 	sc_local_rand;	/* random number for join MAC */
+	uint32_t 	sc_remote_rand;	/* random number for join MAC */
+	uint32_t	sc_mp_remote_token;	/* token for the multipath session */
+	uint32_t	sc_mp_local_token;	/* token for the multipath session */
+
+	uint8_t sc_hmac_local[20];	/* MP_JOIN handshakes use HMACs to ensure */
+	uint8_t sc_hmac_remote[20];	/* that a subflow belongs to connection */
+	char* 	sc_sentmac_ptr;		/* points to HMAC sent in mp_join ACK*/
+
+	uint8_t sent_capable:1,		/* sent mp_cable */
+			csum_enabled:1;
+	uint8_t	sc_mp_flags;		/* flags for mp subtype */
+	struct	mpcb *t_mpcb;		/* pointer to multipath cb */
 };
 
 /*
@@ -88,8 +109,19 @@ struct syncache {
 						/* MSS is implicit */
 #define SCF_UNREACH	0x10			/* icmp unreachable received */
 #define SCF_SIGNATURE	0x20			/* send MD5 digests */
+#define	SCF_MPTCP	0x40			/* MPTCP capable */
 #define SCF_SACK	0x80			/* send SACK option */
 #define SCF_ECN		0x100			/* send ECN setup packet */
+
+#define	SYNCOOKIE_SECRET_SIZE	16
+#define	SYNCOOKIE_LIFETIME	15		/* seconds */
+
+/*
+ * Flags for sc_mp_flags
+ */
+#define MPF_MP_CAPABLE	    0x01
+#define MPF_MP_CAPABLE_ACK	0x02
+#define MPF_MP_JOIN		    0x04
 
 struct syncache_head {
 	struct mtx	sch_mtx;
@@ -99,9 +131,6 @@ struct syncache_head {
 	u_int		sch_length;
 	struct tcp_syncache *sch_sc;
 };
-
-#define	SYNCOOKIE_SECRET_SIZE	16
-#define	SYNCOOKIE_LIFETIME	15		/* seconds */
 
 struct syncookie_secret {
 	volatile u_int oddeven;

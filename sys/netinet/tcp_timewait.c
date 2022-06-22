@@ -39,6 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/callout.h>
+#include <sys/kdb.h>
 #include <sys/kernel.h>
 #include <sys/sysctl.h>
 #include <sys/malloc.h>
@@ -47,6 +48,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/proc.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
+#include <sys/taskqueue.h>
 #include <sys/protosw.h>
 #include <sys/random.h>
 
@@ -76,6 +78,8 @@ __FBSDID("$FreeBSD$");
 #include <netinet/tcp_seq.h>
 #include <netinet/tcp_timer.h>
 #include <netinet/tcp_var.h>
+#include <netinet/mptcp_var.h>
+#include <netinet/mptcp_pcb.h>
 #ifdef INET6
 #include <netinet6/tcp6_var.h>
 #endif
@@ -220,6 +224,8 @@ tcp_tw_destroy(void)
 void
 tcp_twstart(struct tcpcb *tp)
 {
+	printf("%s\n", __func__);
+
 	struct tcptw *tw;
 	struct inpcb *inp = tp->t_inpcb;
 	int acknow;
@@ -276,6 +282,7 @@ tcp_twstart(struct tcpcb *tp)
 			return;
 		}
 	}
+
 	/*
 	 * The tcptw will hold a reference on its inpcb until tcp_twclose
 	 * is called
@@ -350,9 +357,11 @@ tcp_twstart(struct tcpcb *tp)
 		ACCEPT_LOCK();
 		SOCK_LOCK(so);
 		so->so_state &= ~SS_PROTOREF;
+		printf("%s: calling sofree with discarded tp %p\n", __func__, tp);
 		sofree(so);
 	} else
 		INP_WUNLOCK(inp);
+
 }
 
 /*
@@ -453,6 +462,8 @@ drop:
 void
 tcp_twclose(struct tcptw *tw, int reuse)
 {
+	printf("%s\n", __func__);
+
 	struct socket *so;
 	struct inpcb *inp;
 
@@ -508,6 +519,7 @@ tcp_twclose(struct tcptw *tw, int reuse)
 		in_pcbfree(inp);
 	}
 	TCPSTAT_INC(tcps_closed);
+
 }
 
 static int

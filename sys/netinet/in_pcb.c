@@ -326,6 +326,69 @@ out:
 	return (error);
 }
 
+/*
+ * Allocate a PCB and associate it with the socket.
+ * On success return with the PCB locked.
+ */
+struct inpcb *
+in_pcballoc_subflow(struct socket *so, struct inpcbinfo *pcbinfo)
+{
+	struct inpcb *inp;
+	int error;
+
+	INP_INFO_WLOCK_ASSERT(pcbinfo);
+	error = 0;
+	inp = uma_zalloc(pcbinfo->ipi_zone, M_NOWAIT);
+	if (inp == NULL)
+		return inp;
+
+	bzero(inp, inp_zero_size);
+	inp->inp_pcbinfo = pcbinfo;
+	inp->inp_socket = so;
+	inp->inp_cred = crhold(so->so_cred);
+	inp->inp_inc.inc_fibnum = so->so_fibnum;
+#ifdef MAC
+	error = mac_inpcb_init(inp, M_NOWAIT);
+	if (error != 0)
+		goto out;
+	mac_inpcb_create(so, inp);
+#endif
+#ifdef IPSEC
+	error = ipsec_init_policy(so, &inp->inp_sp);
+	if (error != 0) {
+#ifdef MAC
+		mac_inpcb_destroy(inp);
+#endif
+		goto out;
+	}
+#endif /*IPSEC*/
+#ifdef INET6
+	if (INP_SOCKAF(so) == AF_INET6) {
+		inp->inp_vflag |= INP_IPV6PROTO;
+		if (V_ip6_v6only)
+			inp->inp_flags |= IN6P_IPV6_V6ONLY;
+	}
+#endif
+	LIST_INSERT_HEAD(pcbinfo->ipi_listhead, inp, inp_list);
+	pcbinfo->ipi_count++;
+#ifdef INET6
+	if (V_ip6_auto_flowlabel)
+		inp->inp_flags |= IN6P_AUTOFLOWLABEL;
+#endif
+	INP_WLOCK(inp);
+	inp->inp_gencnt = ++pcbinfo->ipi_gencnt;
+	refcount_init(&inp->inp_refcount, 1);	/* Reference from inpcbinfo */
+#if defined(IPSEC) || defined(MAC)
+out:
+	if (error != 0) {
+		crfree(inp->inp_cred);
+		uma_zfree(pcbinfo->ipi_zone, inp);
+		inp = NULL;
+	}
+#endif
+	return (inp);
+}
+
 #ifdef INET
 int
 in_pcbbind(struct inpcb *inp, struct sockaddr *nam, struct ucred *cred)
@@ -1079,6 +1142,7 @@ in_pcbconnect_setup(struct inpcb *inp, struct sockaddr *nam,
 		if (error)
 			return (error);
 	}
+
 	oinp = in_pcblookup_hash_locked(inp->inp_pcbinfo, faddr, fport,
 	    laddr, lport, 0, NULL);
 	if (oinp != NULL) {
@@ -1293,7 +1357,6 @@ in_pcbfree(struct inpcb *inp)
 void
 in_pcbdrop(struct inpcb *inp)
 {
-
 	INP_WLOCK_ASSERT(inp);
 
 	/*
