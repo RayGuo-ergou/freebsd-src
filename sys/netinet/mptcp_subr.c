@@ -2816,7 +2816,7 @@ mp_data_ack(struct mpcb *mp, uint64_t data_ack_num)
 ////		if (so->so_rcv.sb_state & SBS_CANTRCVMORE) {
 ////			soisdisconnected(so);
 ////			mp_disconnect_all_subflows(mp); // let mp_output/usrreq
-///do this? /            /* Some kind of FW2 timer so we don't wait / * around
+/// do this? /            /* Some kind of FW2 timer so we don't wait / * around
 /// in FW2 for a dfin ack? */
 ////		} else /* Should send a data-ack of the DFIN we've got */
 //			need_output = 1;
@@ -3809,7 +3809,7 @@ mp_init(void)
 
 	//	V_mpcb_zone = uma_zcreate("mpsopt", sizeof(struct mp_sopt),
 	//				    NULL, NULL, NULL, NULL,
-	//UMA_ALIGN_PTR, UMA_ZONE_NOFREE); 	uma_zone_set_max(V_mpcb_zone,
+	// UMA_ALIGN_PTR, UMA_ZONE_NOFREE); 	uma_zone_set_max(V_mpcb_zone,
 	// maxsockets);
 
 	MPTOK_INFO_LOCK_INIT(&mp_tokinfo_list,
