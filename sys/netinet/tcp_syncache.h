@@ -110,6 +110,7 @@ struct syncache {
 			   /* MSS is implicit */
 #define SCF_UNREACH 0x10   /* icmp unreachable received */
 #define SCF_SIGNATURE 0x20 /* send MD5 digests */
+#define	SCF_MPTCP 0x40	   /* MPTCP capable */
 #define SCF_SACK 0x80	   /* send SACK option */
 #define SCF_ECN 0x100	   /* send ECN setup packet */
 #define SCF_ACE_N 0x200	   /* send ACE non-ECT setup */

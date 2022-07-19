@@ -593,10 +593,9 @@ int
 tcp_output(struct tcpcb *tp)
 {
 	struct socket *so = tp->t_inpcb->inp_socket;
-	struct mpcb *mp = tp->t_mpcb;
+	//struct mpcb *mp = tp->t_mpcb;
 	int32_t len;
 	uint32_t recwin, sendwin;
-	int off, flags, error = 0; /* Keep compiler happy */
 	u_int if_hw_tsomaxsegcount = 0;
 	u_int if_hw_tsomaxsegsize = 0;
 	int off = 0, flags, map_offset = 0, error = 0; /* Keep compiler happy */
@@ -629,6 +628,7 @@ tcp_output(struct tcpcb *tp)
 
 	isipv6 = (tp->t_inpcb->inp_vflag & INP_IPV6) != 0;
 #endif
+	KASSERT(mp != NULL, ("%s: mp NULL", __func__));
 #ifdef KERN_TLS
 	const bool hw_tls = (so->so_snd.sb_flags & SB_TLS_IFNET) != 0;
 #else
@@ -637,7 +637,6 @@ tcp_output(struct tcpcb *tp)
 
 	NET_EPOCH_ASSERT();
 	INP_WLOCK_ASSERT(tp->t_inpcb);
-	KASSERT(mp != NULL, ("%s: mp NULL", __func__));
 
 #ifdef TCP_OFFLOAD
 	if (tp->t_flags & TF_TOE)
@@ -1454,7 +1453,7 @@ send:
 					// to.to_mopts.dss_data_len = len;
 					if (to.to_mopts.data_seq_num == 0) {
 						printf(
-						    "%s: dsn is 0 len %ld tsqn %u\n",
+						    "%s: dsn is 0 len %d tsqn %u\n",
 						    __func__, len, tp->snd_nxt);
 					}
 				}
@@ -1660,7 +1659,7 @@ send:
 			unsent = snd_dsmap->ds_map_len - map_offset;
 			if (unsent == 0) {
 				printf(
-				    "%s: len %ld unsent %ld, ds_map_len %d\n",
+				    "%s: len %d unsent %ld, ds_map_len %d\n",
 				    __func__, len, unsent,
 				    (uint32_t)snd_dsmap->ds_map_len);
 				kdb_break();

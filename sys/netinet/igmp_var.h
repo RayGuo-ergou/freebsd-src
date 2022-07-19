@@ -48,6 +48,8 @@
  * MULTICAST Revision: 3.5.1.3
  */
 
+struct in_multi;
+
 /*
  * IGMPv3 protocol statistics.
  */

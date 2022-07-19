@@ -49,6 +49,12 @@ __FBSDID("$FreeBSD$");
 #define SCTP_AUTH_RANDOM_SIZE_DEFAULT	32
 #define SCTP_AUTH_RANDOM_SIZE_REQUIRED	32
 
+struct sctp_tcb;
+struct sctp_auth_hmac_algo;
+struct sctp_inpcb;
+struct sctp_auth_chunk;
+
+
 /* union of all supported HMAC algorithm contexts */
 typedef union sctp_hash_context {
 	SCTP_SHA1_CTX sha1;
@@ -172,7 +178,7 @@ extern void sctp_free_authinfo(sctp_authinfo_t *authinfo);
 /* keyed-HMAC functions */
 extern uint32_t sctp_get_auth_chunk_len(uint16_t hmac_algo);
 extern uint32_t sctp_get_hmac_digest_len(uint16_t hmac_algo);
-extern uint32_t
+extern uint32_t 
 sctp_hmac(uint16_t hmac_algo, uint8_t *key, uint32_t keylen,
     uint8_t *text, uint32_t textlen, uint8_t *digest);
 extern uint32_t

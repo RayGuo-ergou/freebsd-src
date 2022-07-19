@@ -505,26 +505,28 @@ mp_get_hmac(uint8_t *digest, uint64_t local_key, uint64_t remote_key,
 	/*
 	 * Set up the hmac key
 	 */
-	uint8_t key[16];
+	//uint8_t key[16];
 	uint32_t keylen = sizeof(local_key) + sizeof(remote_key);
 
-	bcopy(&local_key, key, sizeof(local_key));
-	bcopy(&remote_key, key + 8, sizeof(remote_key));
+	//bcopy(&local_key, key, sizeof(local_key));
+	//bcopy(&remote_key, key + 8, sizeof(remote_key));
 
 	/*
 	 * Set up the hmac msg
 	 */
-	uint64_t hmac_msg;
-	hmac_msg = (uint64_t)local_rand << 32;
-	hmac_msg |= remote_rand;
+	//uint64_t hmac_msg;
+	//hmac_msg = (uint64_t)local_rand << 32;
+	//hmac_msg |= remote_rand;
 
 	/*
 	 * Do the hashing. 0x0001 is the type for sha1
 	 */
-	uint32_t hmac_len = sctp_hmac(0x0001, key, keylen, (uint8_t *)&hmac_msg,
-	    sizeof(hmac_msg), digest);
+	// FIXME: NEW comment for now
+	/*uint32_t hmac_len = sctp_hmac(0x0001, key, keylen, (uint8_t *)&hmac_msg,
+	  *  sizeof(hmac_msg), digest);
 
-	return (hmac_len);
+	* return (hmac_len);*/
+	return (keylen);
 }
 
 /*

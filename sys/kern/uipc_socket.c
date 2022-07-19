@@ -3641,12 +3641,12 @@ sopoll_mpstream(struct socket *so, int events, struct ucred *active_cred,
 
 	if (revents == 0) {
 		if (events & (POLLIN | POLLPRI | POLLRDNORM | POLLRDBAND)) {
-			selrecord(td, &so->so_rcv.sb_sel);
+			selrecord(td, so->so_rcv.sb_sel);
 			so->so_rcv.sb_flags |= SB_SEL;
 		}
 
 		if (events & (POLLOUT | POLLWRNORM)) {
-			selrecord(td, &so->so_snd.sb_sel);
+			selrecord(td, so->so_snd.sb_sel);
 			so->so_snd.sb_flags |= SB_SEL;
 		}
 	}

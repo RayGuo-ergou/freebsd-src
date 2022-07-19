@@ -122,7 +122,7 @@ SYSCTL_INT(_net_inet_tcp_mptcp, OID_AUTO, mptimerlength,
     CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(mptimerlength), 0,
     "MPTCP timeout interval length");
 
-static VNET_DEFINE(uma_zone_t, mpcb_zone);
+VNET_DEFINE(uma_zone_t, mpcb_zone);
 #define V_mpcb_zone VNET(mpcb_zone)
 
 // static VNET_DEFINE(uma_zone_t, mpsopt_zone);
@@ -292,8 +292,10 @@ mp_addresses(SYSCTL_HANDLER_ARGS)
 		error = sbuf_finish(s);
 		sbuf_delete(s);
 	} else {
+		const void* p = req->newptr;
+		char * _p = (char *)(unsigned long)p;
 		i = 1;
-		while ((straddr = strsep((char **)&req->newptr, " ")) != NULL &&
+		while ((straddr = strsep(&_p, " ")) != NULL &&
 		    i < MAX_ADDRS && !error) {
 			ret = inet_pton(AF_INET6, straddr,
 			    &((struct sockaddr_in6 *)&mp_usable_addresses[i])
@@ -366,8 +368,10 @@ mp_debug_sysctl_handler(SYSCTL_HANDLER_ARGS)
 		sbuf_delete(s);
 	} else {
 		char *class, *pair;
+		const void* p = req->newptr;
+		char * _p = (char *)(unsigned long)p;
 
-		while ((pair = strsep(((char **)&req->newptr), ",")) != NULL) {
+		while ((pair = strsep(&_p, ",")) != NULL) {
 			class = strsep(&pair, ":");
 			for (i = 0; i < N_DEBUGCLASSES; i++) {
 				if (strcmp(class, debug_classes[i].class) ==
@@ -1502,7 +1506,7 @@ mp_do_output(struct socket *so, struct mpcb *mp, struct sf_handle *sf,
 		 * Start the m_copym function from the closest mbuf
 		 * to the offset in the socket buffer chain.
 		 */
-		mb = sbsndptr(&so->so_snd, off, map_length, &moff);
+		mb = sbsndptr_noadv(&so->so_snd, off, &moff);
 
 		/* copy the mapped data from the data-level send buffer to a new
 		 * mbuf chain */
@@ -2946,7 +2950,6 @@ mp_close(struct mpcb *mp)
 		KASSERT(so->so_state & SS_PROTOREF, ("mp_close: !SS_PROTOREF"));
 		mpp->mpp_flags &= ~MPP_SOCKREF;
 		MPP_UNLOCK(mpp);
-		ACCEPT_LOCK();
 		SOCK_LOCK(so);
 		so->so_state &= ~SS_PROTOREF;
 		printf("%s: call sofree\n", __func__);
@@ -2982,7 +2985,6 @@ mp_close_all_subflows(struct mpcb *mp)
 			if (error == 0) {
 				(*so->so_proto->pr_usrreqs->pru_close)(
 				    sf_h->sf_so);
-				ACCEPT_LOCK();
 				SOCK_LOCK(sf_h->sf_so);
 				sorele(sf_h->sf_so);
 			}
@@ -3063,7 +3065,6 @@ mp_subflow_freehandle(struct mpcb *mp, struct sf_handle *sf)
 void
 mp_subflow_release_socket(struct socket *so)
 {
-	ACCEPT_LOCK();
 	SOCK_LOCK(so);
 	sorele(so);
 }
@@ -3209,14 +3210,14 @@ mp_allocghostsocket(struct socket *so)
 	if (sf_gso == NULL)
 		return (NULL);
 
-	knlist_init_mtx(&sf_gso->so_rcv.sb_sel.si_note,
+	knlist_init_mtx(&sf_gso->so_rcv.sb_sel->si_note,
 	    SOCKBUF_MTX(&sf_gso->so_rcv));
-	knlist_init_mtx(&sf_gso->so_snd.sb_sel.si_note,
+	knlist_init_mtx(&sf_gso->so_snd.sb_sel->si_note,
 	    SOCKBUF_MTX(&sf_gso->so_snd));
 
 	/* Inherit state from the connection socket (though don't set so_head)
 	 */
-	sf_gso->so_head = NULL;
+	// remove so_head for version 13
 	sf_gso->so_options = so->so_options & ~SO_ACCEPTCONN;
 	sf_gso->so_state = so->so_state;
 	sf_gso->so_linger = so->so_linger;
@@ -3310,7 +3311,7 @@ mp_create_subflow_implicit(struct mpcb *mp, struct socket *so, struct ip *ip,
 
 	soisconnecting(sf_so);
 	tp->t_sf_flags |= SFF_PASSIVE_JOIN;
-	tp->iss = tcp_new_isn(tp);
+	tp->iss = tcp_new_isn(&inp->inp_inc);
 	tp->irs = th->th_seq;
 	tp->t_mp_conn.local_key = mp->local_key;
 	tp->t_mp_conn.remote_key = mp->remote_key;
@@ -3612,8 +3613,8 @@ mp_alloc_subflow_socket(struct socket *so, struct socket **gso)
 		goto out;
 	}
 
-	if ((sf_gso->so_options & SO_LINGER) && sf_gso->so_linger == 0)
-		sf_gso->so_linger = TCP_LINGERTIME;
+//	if ((sf_gso->so_options & SO_LINGER) && sf_gso->so_linger == 0)
+//		sf_gso->so_linger = TCP_LINGERTIME;
 
 	*gso = sf_gso;
 

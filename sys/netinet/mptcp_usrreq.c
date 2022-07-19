@@ -62,7 +62,7 @@ __FBSDID("$FreeBSD$");
 #include <net/if_var.h>
 #include <net/route.h>
 #include <net/vnet.h>
-#include <netinet/cc.h>
+#include <netinet/cc/cc.h>
 #include <netinet/in.h>
 #include <netinet/in_pcb.h>
 #include <netinet/in_systm.h>
@@ -109,8 +109,8 @@ mp_usr_attach(struct socket *so, int proto, struct thread *td)
 	if (error)
 		goto out;
 
-	if ((so->so_options & SO_LINGER) && so->so_linger == 0)
-		so->so_linger = TCP_LINGERTIME;
+//	if ((so->so_options & SO_LINGER) && so->so_linger == 0)
+//		so->so_linger = TCP_LINGERTIME;
 
 	/* XXXNJW: temp subflow protosw for testing */
 	sf_protosw = *so->so_proto;
@@ -784,7 +784,7 @@ mp_usr_accept(struct socket *so, struct sockaddr **nam)
 	KASSERT(mpp != NULL, ("%s: mpp == NULL", __func__));
 	MPP_LOCK(mpp);
 
-	INP_INFO_RLOCK(&V_tcbinfo);
+	INP_INFO_WLOCK(&V_tcbinfo);
 
 	mp = mpptompcb(mpp);
 	KASSERT(mp != NULL, ("%s: mp == NULL", __func__));
@@ -811,7 +811,7 @@ mp_usr_accept(struct socket *so, struct sockaddr **nam)
 
 out:
 	INP_WUNLOCK(inp);
-	INP_INFO_RUNLOCK(&V_tcbinfo);
+	INP_INFO_WUNLOCK(&V_tcbinfo);
 	MPP_UNLOCK(mpp);
 
 	if (error == 0)

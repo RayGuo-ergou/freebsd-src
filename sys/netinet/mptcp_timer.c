@@ -127,7 +127,7 @@ mp_timer_rexmt(void *xmp)
 
 	/* XXXNJW should be concerned about races with discard? */
 	if (mp == NULL) {
-		CURVNET_RESTORE();
+		//CURVNET_RESTORE();
 		return;
 	}
 
@@ -171,7 +171,7 @@ mp_timer_rexmt(void *xmp)
 
 out:
 	MPP_UNLOCK(mpp);
-	CURVNET_RESTORE();
+	//CURVNET_RESTORE();
 }
 
 /* XXXNJW: timeout only set when we have no subflows (i.e.
@@ -188,7 +188,7 @@ mp_timer_timeout(void *xmp)
 
 	/* XXXNJW should be concerned about races with discard? */
 	if (mp == NULL) {
-		CURVNET_RESTORE();
+		//CURVNET_RESTORE();
 		return;
 	}
 
@@ -215,7 +215,6 @@ mp_timer_timeout(void *xmp)
 			if (mpp->mpp_flags & MPP_SOCKREF) {
 				mpp->mpp_flags &= ~MPP_SOCKREF;
 				MPP_UNLOCK(mpp);
-				ACCEPT_LOCK();
 				SOCK_LOCK(so);
 				KASSERT(so->so_state & SS_PROTOREF,
 				    ("tcp_twclose: INP_SOCKREF && !SS_PROTOREF"));
@@ -243,5 +242,5 @@ mp_timer_timeout(void *xmp)
 out:
 	if (mp != NULL)
 		MPP_UNLOCK(mpp);
-	CURVNET_RESTORE();
+	//CURVNET_RESTORE();
 }

@@ -47,7 +47,8 @@
  * More details are available at:
  *   http://caia.swin.edu.au/urp/newtcp/
  */
-
+#include <netinet/tcp_seq.h>
+#include <netinet/tcp.h>
 #ifndef _NETINET_CC_CC_H_
 #define _NETINET_CC_CC_H_
 

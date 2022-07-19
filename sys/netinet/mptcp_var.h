@@ -36,6 +36,10 @@
 
 #include <netinet/in.h>
 #include <netinet/mptcp_types.h>
+#include <netinet/tcp_seq.h>
+#include <netinet/tcp.h>
+#include <sys/malloc.h>
+#include <net/vnet.h>
 
 #define MAX_SUBFLOWS 8
 #define MAX_ADDRS 8
@@ -65,6 +69,13 @@ extern struct sockaddr_storage mp_usable_addresses[MAX_ADDRS];
 
 struct syncache;
 struct ip;
+struct tcpopt;
+struct mp_connection;
+struct tcphdr;
+struct tcpcb;
+struct sockbuf;
+struct in_conninfo;
+struct sockopt;
 
 /* User-protocol handle */
 extern struct pr_usrreqs mptcp_usrreqs;
@@ -77,7 +88,7 @@ extern struct mp_sessions mp_tokinfo_list;
 extern struct protosw sf_protosw;
 
 /* control output (set socket options) */
-int mp_ctloutput(struct socket *, struct sockopt *);
+//int mp_ctloutput(struct socket *, struct sockopt *);
 
 #define sotomppcb(so) ((struct mppcb *)(so)->so_pcb)
 
@@ -523,7 +534,7 @@ struct mp_add {
 };
 
 struct dsn_tag {
-	struct m_tag tag;
+	struct m_tag *tag;
 	uint64_t dsn;
 	uint8_t dss_flags;
 };

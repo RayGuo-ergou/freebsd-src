@@ -1,0 +1,796 @@
+diff --git a/sys/amd64/conf/MPTCP b/sys/amd64/conf/MPTCP
+index 5de14a98ee6..74e52705ffb 100644
+--- a/sys/amd64/conf/MPTCP
++++ b/sys/amd64/conf/MPTCP
+@@ -12,4 +12,3 @@ options 	IPFIREWALL
+ options 	IPFIREWALL_DEFAULT_TO_ACCEPT
+ 
+ nooptions	INET6
+-nooptions	IPSEC
+\ No newline at end of file
+diff --git a/sys/conf/files b/sys/conf/files
+index ce7efeec29f..b4d5ddd61ff 100644
+--- a/sys/conf/files
++++ b/sys/conf/files
+@@ -4395,8 +4395,7 @@ netinet/cc/cc_newreno.c		optional inet | inet6
+ netinet/mptcp_subr.c 		optional inet | inet6
+ netinet/mptcp_timer.c 		optional inet | inet6
+ netinet/mptcp_pcb.c 		optional inet | inet6
+-netinet/mptcp_usrreq.c 		optional inet
+-netinet/mptcp_handshake.c 	optional inet
++netinet/mptcp_usrreq.c 		optional inet 
+ netinet/sctp_asconf.c		optional inet sctp | inet6 sctp
+ netinet/sctp_auth.c		optional inet sctp | inet6 sctp
+ netinet/sctp_bsd_addr.c		optional inet sctp | inet6 sctp
+@@ -4415,6 +4414,7 @@ netinet/sctp_timer.c		optional inet sctp | inet6 sctp
+ netinet/sctp_usrreq.c		optional inet sctp | inet6 sctp
+ netinet/sctputil.c		optional inet sctp | inet6 sctp
+ netinet/siftr.c			optional inet siftr alq | inet6 siftr alq
++netinet/mptcp_handshake.c 	optional inet 
+ netinet/tcp_debug.c		optional tcpdebug
+ netinet/tcp_fastopen.c		optional inet tcp_rfc7413 | inet6 tcp_rfc7413
+ netinet/tcp_hostcache.c		optional inet | inet6
+diff --git a/sys/kern/uipc_socket.c b/sys/kern/uipc_socket.c
+index fb9bb1a3306..a098a50e2cb 100644
+--- a/sys/kern/uipc_socket.c
++++ b/sys/kern/uipc_socket.c
+@@ -3641,12 +3641,12 @@ sopoll_mpstream(struct socket *so, int events, struct ucred *active_cred,
+ 
+ 	if (revents == 0) {
+ 		if (events & (POLLIN | POLLPRI | POLLRDNORM | POLLRDBAND)) {
+-			selrecord(td, &so->so_rcv.sb_sel);
++			selrecord(td, so->so_rcv.sb_sel);
+ 			so->so_rcv.sb_flags |= SB_SEL;
+ 		}
+ 
+ 		if (events & (POLLOUT | POLLWRNORM)) {
+-			selrecord(td, &so->so_snd.sb_sel);
++			selrecord(td, so->so_snd.sb_sel);
+ 			so->so_snd.sb_flags |= SB_SEL;
+ 		}
+ 	}
+diff --git a/sys/netinet/cc/cc.h b/sys/netinet/cc/cc.h
+index be84a6841d1..b4d681ba4e3 100644
+--- a/sys/netinet/cc/cc.h
++++ b/sys/netinet/cc/cc.h
+@@ -47,7 +47,8 @@
+  * More details are available at:
+  *   http://caia.swin.edu.au/urp/newtcp/
+  */
+-
++#include <netinet/tcp_seq.h>
++#include <netinet/tcp.h>
+ #ifndef _NETINET_CC_CC_H_
+ #define _NETINET_CC_CC_H_
+ 
+diff --git a/sys/netinet/igmp_var.h b/sys/netinet/igmp_var.h
+index 16532987f85..687430da2cf 100644
+--- a/sys/netinet/igmp_var.h
++++ b/sys/netinet/igmp_var.h
+@@ -48,6 +48,8 @@
+  * MULTICAST Revision: 3.5.1.3
+  */
+ 
++struct in_multi;
++
+ /*
+  * IGMPv3 protocol statistics.
+  */
+diff --git a/sys/netinet/in_pcb.c b/sys/netinet/in_pcb.c
+index b9a865a259d..1ea0929d691 100644
+--- a/sys/netinet/in_pcb.c
++++ b/sys/netinet/in_pcb.c
+@@ -685,7 +685,7 @@ in_pcballoc_subflow(struct socket *so, struct inpcbinfo *pcbinfo)
+ 			inp->inp_flags |= IN6P_IPV6_V6ONLY;
+ 	}
+ #endif
+-	LIST_INSERT_HEAD(pcbinfo->ipi_listhead, inp, inp_list);
++	CK_LIST_INSERT_HEAD(pcbinfo->ipi_listhead, inp, inp_list);
+ 	pcbinfo->ipi_count++;
+ #ifdef INET6
+ 	if (V_ip6_auto_flowlabel)
+diff --git a/sys/netinet/in_proto.c b/sys/netinet/in_proto.c
+index 8aa03361ad2..c4b6f2bdd33 100644
+--- a/sys/netinet/in_proto.c
++++ b/sys/netinet/in_proto.c
+@@ -81,6 +81,7 @@ __FBSDID("$FreeBSD$");
+ #include <netinet/tcp_var.h>
+ #include <netinet/udp.h>
+ #include <netinet/udp_var.h>
++#include <netinet/mptcp_var.h>
+ 
+ /*
+  * TCP/IP protocol family: IP, ICMP, UDP, TCP.
+diff --git a/sys/netinet/ip_options.h b/sys/netinet/ip_options.h
+index 3213d5f772a..ac86287136a 100644
+--- a/sys/netinet/ip_options.h
++++ b/sys/netinet/ip_options.h
+@@ -32,6 +32,7 @@
+  *
+  * $FreeBSD$
+  */
++#include <netinet/ip_var.h>
+ 
+ #ifndef _NETINET_IP_OPTIONS_H_
+ #define	_NETINET_IP_OPTIONS_H_
+diff --git a/sys/netinet/mptcp_handshake.c b/sys/netinet/mptcp_handshake.c
+index ab8f48df268..3e64210a62d 100644
+--- a/sys/netinet/mptcp_handshake.c
++++ b/sys/netinet/mptcp_handshake.c
+@@ -505,26 +505,28 @@ mp_get_hmac(uint8_t *digest, uint64_t local_key, uint64_t remote_key,
+ 	/*
+ 	 * Set up the hmac key
+ 	 */
+-	uint8_t key[16];
++	//uint8_t key[16];
+ 	uint32_t keylen = sizeof(local_key) + sizeof(remote_key);
+ 
+-	bcopy(&local_key, key, sizeof(local_key));
+-	bcopy(&remote_key, key + 8, sizeof(remote_key));
++	//bcopy(&local_key, key, sizeof(local_key));
++	//bcopy(&remote_key, key + 8, sizeof(remote_key));
+ 
+ 	/*
+ 	 * Set up the hmac msg
+ 	 */
+-	uint64_t hmac_msg;
+-	hmac_msg = (uint64_t)local_rand << 32;
+-	hmac_msg |= remote_rand;
++	//uint64_t hmac_msg;
++	//hmac_msg = (uint64_t)local_rand << 32;
++	//hmac_msg |= remote_rand;
+ 
+ 	/*
+ 	 * Do the hashing. 0x0001 is the type for sha1
+ 	 */
+-	uint32_t hmac_len = sctp_hmac(0x0001, key, keylen, (uint8_t *)&hmac_msg,
+-	    sizeof(hmac_msg), digest);
++	// FIXME: NEW comment for now
++	/*uint32_t hmac_len = sctp_hmac(0x0001, key, keylen, (uint8_t *)&hmac_msg,
++	  *  sizeof(hmac_msg), digest);
+ 
+-	return (hmac_len);
++	* return (hmac_len);*/
++	return (keylen);
+ }
+ 
+ /*
+diff --git a/sys/netinet/mptcp_pcb.c b/sys/netinet/mptcp_pcb.c
+index ab0b61b8bec..9b971f19809 100644
+--- a/sys/netinet/mptcp_pcb.c
++++ b/sys/netinet/mptcp_pcb.c
+@@ -66,7 +66,7 @@
+ #include <netinet/mptcp_var.h>
+ #include <netinet/tcp_var.h>
+ 
+-static VNET_DEFINE(uma_zone_t, mppcb_zone);
++VNET_DEFINE(uma_zone_t, mppcb_zone);
+ #define V_mppcb_zone VNET(mppcb_zone)
+ 
+ /*
+diff --git a/sys/netinet/mptcp_pcb.h b/sys/netinet/mptcp_pcb.h
+index 3b5e72cf5af..d81e1df311f 100644
+--- a/sys/netinet/mptcp_pcb.h
++++ b/sys/netinet/mptcp_pcb.h
+@@ -74,6 +74,8 @@ struct mppcb {
+ #define MPP_UNLOCK(mpp) mtx_unlock(&mpp->mppcb_mutex)
+ #define MPP_LOCK_ASSERT(mpp) mtx_assert(&mpp->mppcb_mutex, MA_OWNED)
+ 
++struct sockaddr;
++
+ int mpp_pcballoc(struct socket *);
+ int mpp_getsockaddr(struct socket *so, struct sockaddr **nam);
+ int mpp_getpeeraddr(struct socket *so, struct sockaddr **nam);
+diff --git a/sys/netinet/mptcp_subr.c b/sys/netinet/mptcp_subr.c
+index 1f67cdfca7f..c1a84eb428a 100644
+--- a/sys/netinet/mptcp_subr.c
++++ b/sys/netinet/mptcp_subr.c
+@@ -122,7 +122,7 @@ SYSCTL_INT(_net_inet_tcp_mptcp, OID_AUTO, mptimerlength,
+     CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(mptimerlength), 0,
+     "MPTCP timeout interval length");
+ 
+-static VNET_DEFINE(uma_zone_t, mpcb_zone);
++VNET_DEFINE(uma_zone_t, mpcb_zone);
+ #define V_mpcb_zone VNET(mpcb_zone)
+ 
+ // static VNET_DEFINE(uma_zone_t, mpsopt_zone);
+@@ -292,8 +292,10 @@ mp_addresses(SYSCTL_HANDLER_ARGS)
+ 		error = sbuf_finish(s);
+ 		sbuf_delete(s);
+ 	} else {
++		const void* p = req->newptr;
++		char * _p = (char *)(unsigned long)p;
+ 		i = 1;
+-		while ((straddr = strsep((char **)&req->newptr, " ")) != NULL &&
++		while ((straddr = strsep(&_p, " ")) != NULL &&
+ 		    i < MAX_ADDRS && !error) {
+ 			ret = inet_pton(AF_INET6, straddr,
+ 			    &((struct sockaddr_in6 *)&mp_usable_addresses[i])
+@@ -366,8 +368,10 @@ mp_debug_sysctl_handler(SYSCTL_HANDLER_ARGS)
+ 		sbuf_delete(s);
+ 	} else {
+ 		char *class, *pair;
++		const void* p = req->newptr;
++		char * _p = (char *)(unsigned long)p;
+ 
+-		while ((pair = strsep(((char **)&req->newptr), ",")) != NULL) {
++		while ((pair = strsep(&_p, ",")) != NULL) {
+ 			class = strsep(&pair, ":");
+ 			for (i = 0; i < N_DEBUGCLASSES; i++) {
+ 				if (strcmp(class, debug_classes[i].class) ==
+@@ -1502,7 +1506,7 @@ mp_do_output(struct socket *so, struct mpcb *mp, struct sf_handle *sf,
+ 		 * Start the m_copym function from the closest mbuf
+ 		 * to the offset in the socket buffer chain.
+ 		 */
+-		mb = sbsndptr(&so->so_snd, off, map_length, &moff);
++		mb = sbsndptr_noadv(&so->so_snd, off, &moff);
+ 
+ 		/* copy the mapped data from the data-level send buffer to a new
+ 		 * mbuf chain */
+@@ -2946,7 +2950,6 @@ mp_close(struct mpcb *mp)
+ 		KASSERT(so->so_state & SS_PROTOREF, ("mp_close: !SS_PROTOREF"));
+ 		mpp->mpp_flags &= ~MPP_SOCKREF;
+ 		MPP_UNLOCK(mpp);
+-		ACCEPT_LOCK();
+ 		SOCK_LOCK(so);
+ 		so->so_state &= ~SS_PROTOREF;
+ 		printf("%s: call sofree\n", __func__);
+@@ -2982,7 +2985,6 @@ mp_close_all_subflows(struct mpcb *mp)
+ 			if (error == 0) {
+ 				(*so->so_proto->pr_usrreqs->pru_close)(
+ 				    sf_h->sf_so);
+-				ACCEPT_LOCK();
+ 				SOCK_LOCK(sf_h->sf_so);
+ 				sorele(sf_h->sf_so);
+ 			}
+@@ -3063,7 +3065,6 @@ mp_subflow_freehandle(struct mpcb *mp, struct sf_handle *sf)
+ void
+ mp_subflow_release_socket(struct socket *so)
+ {
+-	ACCEPT_LOCK();
+ 	SOCK_LOCK(so);
+ 	sorele(so);
+ }
+@@ -3209,14 +3210,14 @@ mp_allocghostsocket(struct socket *so)
+ 	if (sf_gso == NULL)
+ 		return (NULL);
+ 
+-	knlist_init_mtx(&sf_gso->so_rcv.sb_sel.si_note,
++	knlist_init_mtx(&sf_gso->so_rcv.sb_sel->si_note,
+ 	    SOCKBUF_MTX(&sf_gso->so_rcv));
+-	knlist_init_mtx(&sf_gso->so_snd.sb_sel.si_note,
++	knlist_init_mtx(&sf_gso->so_snd.sb_sel->si_note,
+ 	    SOCKBUF_MTX(&sf_gso->so_snd));
+ 
+ 	/* Inherit state from the connection socket (though don't set so_head)
+ 	 */
+-	sf_gso->so_head = NULL;
++	// remove so_head for version 13
+ 	sf_gso->so_options = so->so_options & ~SO_ACCEPTCONN;
+ 	sf_gso->so_state = so->so_state;
+ 	sf_gso->so_linger = so->so_linger;
+@@ -3310,7 +3311,7 @@ mp_create_subflow_implicit(struct mpcb *mp, struct socket *so, struct ip *ip,
+ 
+ 	soisconnecting(sf_so);
+ 	tp->t_sf_flags |= SFF_PASSIVE_JOIN;
+-	tp->iss = tcp_new_isn(tp);
++	tp->iss = tcp_new_isn(&inp->inp_inc);
+ 	tp->irs = th->th_seq;
+ 	tp->t_mp_conn.local_key = mp->local_key;
+ 	tp->t_mp_conn.remote_key = mp->remote_key;
+@@ -3612,8 +3613,8 @@ mp_alloc_subflow_socket(struct socket *so, struct socket **gso)
+ 		goto out;
+ 	}
+ 
+-	if ((sf_gso->so_options & SO_LINGER) && sf_gso->so_linger == 0)
+-		sf_gso->so_linger = TCP_LINGERTIME;
++//	if ((sf_gso->so_options & SO_LINGER) && sf_gso->so_linger == 0)
++//		sf_gso->so_linger = TCP_LINGERTIME;
+ 
+ 	*gso = sf_gso;
+ 
+diff --git a/sys/netinet/mptcp_timer.c b/sys/netinet/mptcp_timer.c
+index e8e52cff08a..813623e6c43 100644
+--- a/sys/netinet/mptcp_timer.c
++++ b/sys/netinet/mptcp_timer.c
+@@ -127,7 +127,7 @@ mp_timer_rexmt(void *xmp)
+ 
+ 	/* XXXNJW should be concerned about races with discard? */
+ 	if (mp == NULL) {
+-		CURVNET_RESTORE();
++		//CURVNET_RESTORE();
+ 		return;
+ 	}
+ 
+@@ -171,7 +171,7 @@ mp_timer_rexmt(void *xmp)
+ 
+ out:
+ 	MPP_UNLOCK(mpp);
+-	CURVNET_RESTORE();
++	//CURVNET_RESTORE();
+ }
+ 
+ /* XXXNJW: timeout only set when we have no subflows (i.e.
+@@ -188,7 +188,7 @@ mp_timer_timeout(void *xmp)
+ 
+ 	/* XXXNJW should be concerned about races with discard? */
+ 	if (mp == NULL) {
+-		CURVNET_RESTORE();
++		//CURVNET_RESTORE();
+ 		return;
+ 	}
+ 
+@@ -215,7 +215,6 @@ mp_timer_timeout(void *xmp)
+ 			if (mpp->mpp_flags & MPP_SOCKREF) {
+ 				mpp->mpp_flags &= ~MPP_SOCKREF;
+ 				MPP_UNLOCK(mpp);
+-				ACCEPT_LOCK();
+ 				SOCK_LOCK(so);
+ 				KASSERT(so->so_state & SS_PROTOREF,
+ 				    ("tcp_twclose: INP_SOCKREF && !SS_PROTOREF"));
+@@ -243,5 +242,5 @@ mp_timer_timeout(void *xmp)
+ out:
+ 	if (mp != NULL)
+ 		MPP_UNLOCK(mpp);
+-	CURVNET_RESTORE();
++	//CURVNET_RESTORE();
+ }
+diff --git a/sys/netinet/mptcp_usrreq.c b/sys/netinet/mptcp_usrreq.c
+index b80dc96f6b5..116252f8f52 100644
+--- a/sys/netinet/mptcp_usrreq.c
++++ b/sys/netinet/mptcp_usrreq.c
+@@ -62,7 +62,7 @@ __FBSDID("$FreeBSD$");
+ #include <net/if_var.h>
+ #include <net/route.h>
+ #include <net/vnet.h>
+-#include <netinet/cc.h>
++#include <netinet/cc/cc.h>
+ #include <netinet/in.h>
+ #include <netinet/in_pcb.h>
+ #include <netinet/in_systm.h>
+@@ -109,8 +109,8 @@ mp_usr_attach(struct socket *so, int proto, struct thread *td)
+ 	if (error)
+ 		goto out;
+ 
+-	if ((so->so_options & SO_LINGER) && so->so_linger == 0)
+-		so->so_linger = TCP_LINGERTIME;
++//	if ((so->so_options & SO_LINGER) && so->so_linger == 0)
++//		so->so_linger = TCP_LINGERTIME;
+ 
+ 	/* XXXNJW: temp subflow protosw for testing */
+ 	sf_protosw = *so->so_proto;
+@@ -784,7 +784,7 @@ mp_usr_accept(struct socket *so, struct sockaddr **nam)
+ 	KASSERT(mpp != NULL, ("%s: mpp == NULL", __func__));
+ 	MPP_LOCK(mpp);
+ 
+-	INP_INFO_RLOCK(&V_tcbinfo);
++	INP_INFO_WLOCK(&V_tcbinfo);
+ 
+ 	mp = mpptompcb(mpp);
+ 	KASSERT(mp != NULL, ("%s: mp == NULL", __func__));
+@@ -811,7 +811,7 @@ mp_usr_accept(struct socket *so, struct sockaddr **nam)
+ 
+ out:
+ 	INP_WUNLOCK(inp);
+-	INP_INFO_RUNLOCK(&V_tcbinfo);
++	INP_INFO_WUNLOCK(&V_tcbinfo);
+ 	MPP_UNLOCK(mpp);
+ 
+ 	if (error == 0)
+diff --git a/sys/netinet/mptcp_var.h b/sys/netinet/mptcp_var.h
+index 17314f0dbcf..8521ba3f615 100644
+--- a/sys/netinet/mptcp_var.h
++++ b/sys/netinet/mptcp_var.h
+@@ -36,6 +36,10 @@
+ 
+ #include <netinet/in.h>
+ #include <netinet/mptcp_types.h>
++#include <netinet/tcp_seq.h>
++#include <netinet/tcp.h>
++#include <sys/malloc.h>
++#include <net/vnet.h>
+ 
+ #define MAX_SUBFLOWS 8
+ #define MAX_ADDRS 8
+@@ -65,6 +69,13 @@ extern struct sockaddr_storage mp_usable_addresses[MAX_ADDRS];
+ 
+ struct syncache;
+ struct ip;
++struct tcpopt;
++struct mp_connection;
++struct tcphdr;
++struct tcpcb;
++struct sockbuf;
++struct in_conninfo;
++struct sockopt;
+ 
+ /* User-protocol handle */
+ extern struct pr_usrreqs mptcp_usrreqs;
+@@ -77,7 +88,7 @@ extern struct mp_sessions mp_tokinfo_list;
+ extern struct protosw sf_protosw;
+ 
+ /* control output (set socket options) */
+-int mp_ctloutput(struct socket *, struct sockopt *);
++//int mp_ctloutput(struct socket *, struct sockopt *);
+ 
+ #define sotomppcb(so) ((struct mppcb *)(so)->so_pcb)
+ 
+@@ -523,7 +534,7 @@ struct mp_add {
+ };
+ 
+ struct dsn_tag {
+-	struct m_tag tag;
++	struct m_tag *tag;
+ 	uint64_t dsn;
+ 	uint8_t dss_flags;
+ };
+diff --git a/sys/netinet/sctp_auth.h b/sys/netinet/sctp_auth.h
+index 1056bcdcd13..f28e1d1b236 100644
+--- a/sys/netinet/sctp_auth.h
++++ b/sys/netinet/sctp_auth.h
+@@ -49,6 +49,12 @@ __FBSDID("$FreeBSD$");
+ #define SCTP_AUTH_RANDOM_SIZE_DEFAULT	32
+ #define SCTP_AUTH_RANDOM_SIZE_REQUIRED	32
+ 
++struct sctp_tcb;
++struct sctp_auth_hmac_algo;
++struct sctp_inpcb;
++struct sctp_auth_chunk;
++
++
+ /* union of all supported HMAC algorithm contexts */
+ typedef union sctp_hash_context {
+ 	SCTP_SHA1_CTX sha1;
+@@ -172,7 +178,7 @@ extern void sctp_free_authinfo(sctp_authinfo_t *authinfo);
+ /* keyed-HMAC functions */
+ extern uint32_t sctp_get_auth_chunk_len(uint16_t hmac_algo);
+ extern uint32_t sctp_get_hmac_digest_len(uint16_t hmac_algo);
+-extern uint32_t
++extern uint32_t 
+ sctp_hmac(uint16_t hmac_algo, uint8_t *key, uint32_t keylen,
+     uint8_t *text, uint32_t textlen, uint8_t *digest);
+ extern uint32_t
+diff --git a/sys/netinet/tcp_input.c b/sys/netinet/tcp_input.c
+index 20bcf2ccc60..33ecde93660 100644
+--- a/sys/netinet/tcp_input.c
++++ b/sys/netinet/tcp_input.c
+@@ -255,8 +255,9 @@ static int tp_schedule_event(struct tcpcb *tp, int event);
+  * size of struct tcpstat.  TCP running connection count is a regular array.
+  */
+ VNET_PCPUSTAT_DEFINE(struct tcpstat, tcpstat);
+-SYSCTL_VNET_PCPUSTAT(_net_inet_tcp, TCPCTL_STATS, stats, struct tcpstat,
+-    tcpstat, "TCP statistics (struct tcpstat, netinet/tcp_var.h)");
++// FIXME: disable for now, no idea how to fix this.
++//SYSCTL_VNET_PCPUSTAT(_net_inet_tcp, TCPCTL_STATS, stats, struct tcpstat,
++//    tcpstat, "TCP statistics (struct tcpstat, netinet/tcp_var.h)");
+ VNET_DEFINE(counter_u64_t, tcps_states[TCP_NSTATES]);
+ SYSCTL_COUNTER_U64_ARRAY(_net_inet_tcp, TCPCTL_STATES, states,
+     CTLFLAG_RD | CTLFLAG_VNET, &VNET_NAME(tcps_states)[0], TCP_NSTATES,
+@@ -784,61 +785,6 @@ tcp_input_with_port(struct mbuf **mp, int *offp, int proto, uint16_t port)
+ 	}
+ #endif /* INET */
+ 
+-	/* Might be a join. rough method for locating the mpcb and creating
+-	 * a subflow to handle the incoming. This is used for implicit joins
+-	 * (i.e. in cases where an inpcb has not been set up for an address
+-	 * pair). Should have a sysctl that controls whether to allow implicit
+-	 * joins. */
+-	if ((thflags & TH_SYN) && !tried_join_locate) {
+-		tcp_dooptions(&to, optp, optlen, TO_SYN);
+-
+-		/* Returns with mp locked. */
+-		if (to.to_mopts.mpo_flags & MPOF_JOIN_SYN) {
+-			struct mpcb *mp = NULL;
+-
+-			/* Might have pulled an inpcb out if joining to the
+-			 * address bound as server (would match wildcard src)
+-			 *
+-			 * XXXNJW: but if the inpcb is pre-allocated, then we
+-			 * don't want to override this. need to add a check to
+-			 * make sure we don't ignore a valid inpcb and create
+-			 * a new one for nothing. (or alternativley, could
+-			 * never pre-alloc the inpcb for a subflow).
+-			 */
+-			if (inp) {
+-				INP_WUNLOCK(inp);
+-
+-				/* XXXNJW a bit wasteful but do an exact lookup.
+-				 * if we find an existing inpcb then drop. */
+-				inp = in_pcblookup_mbuf(&V_tcbinfo, ip->ip_src,
+-				    th->th_sport, ip->ip_dst, th->th_dport,
+-				    INPLOOKUP_WLOCKPCB, m->m_pkthdr.rcvif, m);
+-				if (inp) {
+-					printf("%s: join on existing tuple\n",
+-					    __func__);
+-					goto dropunlock;
+-				}
+-			}
+-			tried_join_locate = 1;
+-			/* Retuns with MP locked */
+-			mp = mp_locate_mpcb(to.to_mopts.rcv_token);
+-
+-			/* if it belongs to an existing mp connection, create a
+-			 * new subflow, insert into has list then jump back to
+-			 * findpcb. */
+-			if (mp != NULL) {
+-				int error_t = 0;
+-				/* Drops the mp lock */
+-				error_t = mp_create_subflow_implicit(mp,
+-				    mp->mp_mppcb->mpp_socket, ip, th);
+-				if (!error_t)
+-					goto findpcb;
+-			} else {
+-				printf("%s: failed to locate mpcb\n", __func__);
+-				goto dropwithreset;
+-			}
+-		}
+-	}
+ 
+ 	/*
+ 	 * Check that TCP offset makes sense,
+@@ -978,7 +924,62 @@ tcp_input_with_port(struct mbuf **mp, int *offp, int proto, uint16_t port)
+ 		    INPLOOKUP_WILDCARD | INPLOOKUP_WLOCKPCB, m->m_pkthdr.rcvif,
+ 		    m);
+ #endif /* INET */
++	
++	/* Might be a join. rough method for locating the mpcb and creating
++	 * a subflow to handle the incoming. This is used for implicit joins
++	 * (i.e. in cases where an inpcb has not been set up for an address
++	 * pair). Should have a sysctl that controls whether to allow implicit
++	 * joins. */
++	if ((thflags & TH_SYN) && !tried_join_locate) {
++		tcp_dooptions(&to, optp, optlen, TO_SYN);
++
++		/* Returns with mp locked. */
++		if (to.to_mopts.mpo_flags & MPOF_JOIN_SYN) {
++			struct mpcb *mp = NULL;
++
++			/* Might have pulled an inpcb out if joining to the
++			 * address bound as server (would match wildcard src)
++			 *
++			 * XXXNJW: but if the inpcb is pre-allocated, then we
++			 * don't want to override this. need to add a check to
++			 * make sure we don't ignore a valid inpcb and create
++			 * a new one for nothing. (or alternativley, could
++			 * never pre-alloc the inpcb for a subflow).
++			 */
++			if (inp) {
++				INP_WUNLOCK(inp);
+ 
++				/* XXXNJW a bit wasteful but do an exact lookup.
++				 * if we find an existing inpcb then drop. */
++				inp = in_pcblookup_mbuf(&V_tcbinfo, ip->ip_src,
++				    th->th_sport, ip->ip_dst, th->th_dport,
++				    INPLOOKUP_WLOCKPCB, m->m_pkthdr.rcvif, m);
++				if (inp) {
++					printf("%s: join on existing tuple\n",
++					    __func__);
++					goto dropunlock;
++				}
++			}
++			tried_join_locate = 1;
++			/* Retuns with MP locked */
++			mp = mp_locate_mpcb(to.to_mopts.rcv_token);
++
++			/* if it belongs to an existing mp connection, create a
++			 * new subflow, insert into has list then jump back to
++			 * findpcb. */
++			if (mp != NULL) {
++				int error_t = 0;
++				/* Drops the mp lock */
++				error_t = mp_create_subflow_implicit(mp,
++				    mp->mp_mppcb->mpp_socket, ip, th);
++				if (!error_t)
++					goto findpcb;
++			} else {
++				printf("%s: failed to locate mpcb\n", __func__);
++				goto dropwithreset;
++			}
++		}
++	}
+ 	/*
+ 	 * If the INPCB does not exist then all data in the incoming
+ 	 * segment is discarded and an appropriate RST is sent back.
+@@ -1203,9 +1204,8 @@ tcp_input_with_port(struct mbuf **mp, int *offp, int proto, uint16_t port)
+ 			 * contains.  tcp_do_segment() consumes
+ 			 * the mbuf chain and unlocks the inpcb.
+ 			 */
+-			tcp_do_segment(m, th, so, tp, drop_hdrlen, tlen, iptos,
+-			    ti_locked);
+-			INP_INFO_UNLOCK_ASSERT(&V_tcbinfo);
++			tcp_do_segment(m, th, so, tp, drop_hdrlen, tlen, iptos);
++			INP_INFO_WUNLOCK_ASSERT(&V_tcbinfo);
+ 			return (IPPROTO_DONE);
+ 		}
+ 
+@@ -1334,11 +1334,7 @@ tcp_input_with_port(struct mbuf **mp, int *offp, int proto, uint16_t port)
+ 			if (error)
+ 				printf("%s: error %d\n", __func__, error);
+ 
+-			if (ti_locked == TI_WLOCKED) {
+-				INP_INFO_WUNLOCK(&V_tcbinfo);
+-				ti_locked = TI_UNLOCKED;
+-			}
+-			INP_INFO_UNLOCK_ASSERT(&V_tcbinfo);
++			INP_INFO_WUNLOCK_ASSERT(&V_tcbinfo);
+ 			return (IPPROTO_DONE);
+ 		}
+ 
+@@ -2017,7 +2013,7 @@ tcp_do_segment(struct mbuf *m, struct tcphdr *th, struct socket *so,
+ 				    m_tag_alloc(PACKET_COOKIE_MPTCP,
+ 					PACKET_TAG_DSN, DSN_TAG_LEN,
+ 					M_NOWAIT); // space for 64-bit DSN
+-				struct m_tag *mtag = &dtag->tag;
++				struct m_tag *mtag = dtag->tag;
+ 
+ 				dtag->dsn = to.to_mopts.data_seq_num;
+ 				dtag->dss_flags |= MP_DFIN;
+@@ -2263,7 +2259,7 @@ tcp_do_segment(struct mbuf *m, struct tcphdr *th, struct socket *so,
+ 		struct dsn_tag *dtag = (struct dsn_tag *)m_tag_alloc(
+ 		    PACKET_COOKIE_MPTCP, PACKET_TAG_DSN, DSN_TAG_LEN,
+ 		    M_NOWAIT); // space for 64-bit DSN
+-		struct m_tag *mtag = &dtag->tag;
++		struct m_tag *mtag = dtag->tag;
+ 
+ 		/*
+ 		 * Convert 32bit DS map start sequence numbers into 64 bit.
+@@ -2778,7 +2774,8 @@ tcp_do_segment(struct mbuf *m, struct tcphdr *th, struct socket *so,
+ 			 * if we end up appending segments at the data-level.
+ 			 */
+ 			m_adj(m, drop_hdrlen); /* delayed header drop */
+-			thflags = tcp_reass(tp, th, &tlen, m);
++			tcp_seq temp = th->th_seq;
++			thflags = tcp_reass(tp, th, &temp, &tlen, m);
+ 
+ 			/* is there any new in-order data? */
+ 			if (tp->t_segq_received) {
+@@ -4220,7 +4217,7 @@ tcp_do_segment(struct mbuf *m, struct tcphdr *th, struct socket *so,
+ 		 * TCP reass checks for TCPS established and queues
+ 		 * pre-established segments that have len.
+ 		 */
+-		if (th->th_seq == tp->rcv_nxt && tp->t_segq == NULL &&
++		if (th->th_seq == tp->rcv_nxt && SEGQ_EMPTY(tp) &&
+ 		    TCPS_HAVEESTABLISHED(tp->t_state)) {
+ 			TCPSTAT_INC(tcps_rcvpack);
+ 			TCPSTAT_ADD(tcps_rcvbyte, tlen);
+@@ -4249,8 +4246,10 @@ tcp_do_segment(struct mbuf *m, struct tcphdr *th, struct socket *so,
+ 		//		if (so->so_rcv.sb_state & SBS_CANTRCVMORE) {
+ 		//			m_freem(m);
+ 		//		} else {
+-		if (tlen)
+-			thflags = tcp_reass(tp, th, &tlen, m);
++		if (tlen){
++			tcp_seq temp = save_start;
++			thflags = tcp_reass(tp, th, &temp, &tlen, m);
++		}
+ 		else
+ 			thflags = th->th_flags & TH_FIN;
+ 		//		}
+diff --git a/sys/netinet/tcp_output.c b/sys/netinet/tcp_output.c
+index 2884621e543..5f30f82d4d8 100644
+--- a/sys/netinet/tcp_output.c
++++ b/sys/netinet/tcp_output.c
+@@ -593,10 +593,9 @@ int
+ tcp_output(struct tcpcb *tp)
+ {
+ 	struct socket *so = tp->t_inpcb->inp_socket;
+-	struct mpcb *mp = tp->t_mpcb;
++	//struct mpcb *mp = tp->t_mpcb;
+ 	int32_t len;
+ 	uint32_t recwin, sendwin;
+-	int off, flags, error = 0; /* Keep compiler happy */
+ 	u_int if_hw_tsomaxsegcount = 0;
+ 	u_int if_hw_tsomaxsegsize = 0;
+ 	int off = 0, flags, map_offset = 0, error = 0; /* Keep compiler happy */
+@@ -629,6 +628,7 @@ tcp_output(struct tcpcb *tp)
+ 
+ 	isipv6 = (tp->t_inpcb->inp_vflag & INP_IPV6) != 0;
+ #endif
++	KASSERT(mp != NULL, ("%s: mp NULL", __func__));
+ #ifdef KERN_TLS
+ 	const bool hw_tls = (so->so_snd.sb_flags & SB_TLS_IFNET) != 0;
+ #else
+@@ -637,7 +637,6 @@ tcp_output(struct tcpcb *tp)
+ 
+ 	NET_EPOCH_ASSERT();
+ 	INP_WLOCK_ASSERT(tp->t_inpcb);
+-	KASSERT(mp != NULL, ("%s: mp NULL", __func__));
+ 
+ #ifdef TCP_OFFLOAD
+ 	if (tp->t_flags & TF_TOE)
+@@ -1454,7 +1453,7 @@ tcp_output(struct tcpcb *tp)
+ 					// to.to_mopts.dss_data_len = len;
+ 					if (to.to_mopts.data_seq_num == 0) {
+ 						printf(
+-						    "%s: dsn is 0 len %ld tsqn %u\n",
++						    "%s: dsn is 0 len %d tsqn %u\n",
+ 						    __func__, len, tp->snd_nxt);
+ 					}
+ 				}
+@@ -1660,7 +1659,7 @@ tcp_output(struct tcpcb *tp)
+ 			unsent = snd_dsmap->ds_map_len - map_offset;
+ 			if (unsent == 0) {
+ 				printf(
+-				    "%s: len %ld unsent %ld, ds_map_len %d\n",
++				    "%s: len %d unsent %ld, ds_map_len %d\n",
+ 				    __func__, len, unsent,
+ 				    (uint32_t)snd_dsmap->ds_map_len);
+ 				kdb_break();
+diff --git a/sys/netinet/tcp_syncache.c b/sys/netinet/tcp_syncache.c
+index 3b48ec61a92..84031ec67bd 100644
+--- a/sys/netinet/tcp_syncache.c
++++ b/sys/netinet/tcp_syncache.c
+@@ -2160,7 +2160,7 @@ syncache_respond(struct syncache *sc, const struct mbuf *m0, int flags)
+ 		/* If mp_capable was set and is now unset, then it has
+ 		 * been added as an option on the outgoing SYN/ACK */
+ 		if ((mpof_flags & MPOF_CAPABLE_SYN) &&
+-		    (!to.to_mopts.mpo_flags & MPOF_CAPABLE_SYN))
++		    ((!to.to_mopts.mpo_flags) & MPOF_CAPABLE_SYN))
+ 			sc->sent_capable = 1;
+ 
+ 		/* Adjust headers by option size. */
+@@ -2791,7 +2791,7 @@ inp_lookup(struct in_addr *faddr, struct in_addr *laddr, uint16_t fport,
+ 	struct tcpcb *tp = NULL;
+ 
+ 	INP_INFO_LOCK_ASSERT(&V_tcbinfo);
+-	LIST_FOREACH (inp, &V_tcb, inp_list) {
++	CK_LIST_FOREACH (inp, &V_tcb, inp_list) {
+ 		INP_WLOCK(inp);
+ 		/* Important to skip tcptw structs. */
+ 		if (!(inp->inp_flags & INP_TIMEWAIT) &&
+diff --git a/sys/netinet/tcp_syncache.h b/sys/netinet/tcp_syncache.h
+index 6875d098a10..65a9afccd6f 100644
+--- a/sys/netinet/tcp_syncache.h
++++ b/sys/netinet/tcp_syncache.h
+@@ -110,6 +110,7 @@ struct syncache {
+ 			   /* MSS is implicit */
+ #define SCF_UNREACH 0x10   /* icmp unreachable received */
+ #define SCF_SIGNATURE 0x20 /* send MD5 digests */
++#define	SCF_MPTCP 0x40	   /* MPTCP capable */
+ #define SCF_SACK 0x80	   /* send SACK option */
+ #define SCF_ECN 0x100	   /* send ECN setup packet */
+ #define SCF_ACE_N 0x200	   /* send ACE non-ECT setup */
+diff --git a/sys/netinet/tcp_usrreq.c b/sys/netinet/tcp_usrreq.c
+index ce972788565..dae0993119f 100644
+--- a/sys/netinet/tcp_usrreq.c
++++ b/sys/netinet/tcp_usrreq.c
+@@ -859,7 +859,7 @@ tcp_usr_accept(struct socket *so, struct sockaddr **nam)
+ 
+ 	inp = sotoinpcb(so);
+ 	KASSERT(inp != NULL, ("tcp_usr_accept: inp == NULL"));
+-	INP_INFO_RLOCK(&V_tcbinfo);
++	INP_INFO_WLOCK(&V_tcbinfo);
+ 	INP_WLOCK(inp);
+ 	if (inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) {
+ 		error = ECONNABORTED;
+@@ -880,7 +880,7 @@ tcp_usr_accept(struct socket *so, struct sockaddr **nam)
+ 	TCPDEBUG2(PRU_ACCEPT);
+ 	TCP_PROBE2(debug__user, tp, PRU_ACCEPT);
+ 	INP_WUNLOCK(inp);
+-	INP_INFO_RUNLOCK(&V_tcbinfo);
++	INP_INFO_WUNLOCK(&V_tcbinfo);
+ 	if (error == 0)
+ 		*nam = in_sockaddr(port, &addr);
+ 	return error;
+@@ -947,7 +947,7 @@ tcp6_usr_accept(struct socket *so, struct sockaddr **nam)
+ /*
+  * Mark the connection as being incapable of further output.
+  */
+-int
++static int
+ tcp_usr_shutdown(struct socket *so)
+ {
+ 	printf("%s\n", __func__);
+diff --git a/sys/netinet/tcp_var.h b/sys/netinet/tcp_var.h
+index aff72279fb0..5d7fd0a81d3 100644
+--- a/sys/netinet/tcp_var.h
++++ b/sys/netinet/tcp_var.h
+@@ -603,7 +603,7 @@ struct tcpopt {
+ #define TOF_TS 0x0010	     /* timestamp */
+ #define TOF_SIGNATURE 0x0040 /* TCP-MD5 signature option (RFC2385) */
+ #define TOF_SACK 0x0080	     /* Peer sent SACK option */
+-#define TOF_FASTOPEN 0x0100  /* TCP Fast Open (TFO) cookie */
++#define TOF_FASTOPEN 0x0101  /* TCP Fast Open (TFO) cookie */
+ #define TOF_MAXOPT 0x0200
+ #define TOF_MPTCP 0x0100 /* MPTCP options present */
+ #define TOF_MAXOPT 0x0200

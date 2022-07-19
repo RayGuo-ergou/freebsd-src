@@ -2160,7 +2160,7 @@ syncache_respond(struct syncache *sc, const struct mbuf *m0, int flags)
 		/* If mp_capable was set and is now unset, then it has
 		 * been added as an option on the outgoing SYN/ACK */
 		if ((mpof_flags & MPOF_CAPABLE_SYN) &&
-		    (!to.to_mopts.mpo_flags & MPOF_CAPABLE_SYN))
+		    ((!to.to_mopts.mpo_flags) & MPOF_CAPABLE_SYN))
 			sc->sent_capable = 1;
 
 		/* Adjust headers by option size. */
@@ -2791,7 +2791,7 @@ inp_lookup(struct in_addr *faddr, struct in_addr *laddr, uint16_t fport,
 	struct tcpcb *tp = NULL;
 
 	INP_INFO_LOCK_ASSERT(&V_tcbinfo);
-	LIST_FOREACH (inp, &V_tcb, inp_list) {
+	CK_LIST_FOREACH (inp, &V_tcb, inp_list) {
 		INP_WLOCK(inp);
 		/* Important to skip tcptw structs. */
 		if (!(inp->inp_flags & INP_TIMEWAIT) &&

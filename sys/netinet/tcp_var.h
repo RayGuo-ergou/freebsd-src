@@ -603,7 +603,7 @@ struct tcpopt {
 #define TOF_TS 0x0010	     /* timestamp */
 #define TOF_SIGNATURE 0x0040 /* TCP-MD5 signature option (RFC2385) */
 #define TOF_SACK 0x0080	     /* Peer sent SACK option */
-#define TOF_FASTOPEN 0x0100  /* TCP Fast Open (TFO) cookie */
+#define TOF_FASTOPEN 0x0101  /* TCP Fast Open (TFO) cookie */
 #define TOF_MAXOPT 0x0200
 #define TOF_MPTCP 0x0100 /* MPTCP options present */
 #define TOF_MAXOPT 0x0200

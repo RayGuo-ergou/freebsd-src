@@ -685,7 +685,7 @@ in_pcballoc_subflow(struct socket *so, struct inpcbinfo *pcbinfo)
 			inp->inp_flags |= IN6P_IPV6_V6ONLY;
 	}
 #endif
-	LIST_INSERT_HEAD(pcbinfo->ipi_listhead, inp, inp_list);
+	CK_LIST_INSERT_HEAD(pcbinfo->ipi_listhead, inp, inp_list);
 	pcbinfo->ipi_count++;
 #ifdef INET6
 	if (V_ip6_auto_flowlabel)

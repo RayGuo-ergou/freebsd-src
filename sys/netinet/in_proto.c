@@ -81,6 +81,7 @@ __FBSDID("$FreeBSD$");
 #include <netinet/tcp_var.h>
 #include <netinet/udp.h>
 #include <netinet/udp_var.h>
+#include <netinet/mptcp_var.h>
 
 /*
  * TCP/IP protocol family: IP, ICMP, UDP, TCP.

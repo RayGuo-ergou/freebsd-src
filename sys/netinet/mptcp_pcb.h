@@ -74,6 +74,8 @@ struct mppcb {
 #define MPP_UNLOCK(mpp) mtx_unlock(&mpp->mppcb_mutex)
 #define MPP_LOCK_ASSERT(mpp) mtx_assert(&mpp->mppcb_mutex, MA_OWNED)
 
+struct sockaddr;
+
 int mpp_pcballoc(struct socket *);
 int mpp_getsockaddr(struct socket *so, struct sockaddr **nam);
 int mpp_getpeeraddr(struct socket *so, struct sockaddr **nam);

@@ -255,8 +255,9 @@ static int tp_schedule_event(struct tcpcb *tp, int event);
  * size of struct tcpstat.  TCP running connection count is a regular array.
  */
 VNET_PCPUSTAT_DEFINE(struct tcpstat, tcpstat);
-SYSCTL_VNET_PCPUSTAT(_net_inet_tcp, TCPCTL_STATS, stats, struct tcpstat,
-    tcpstat, "TCP statistics (struct tcpstat, netinet/tcp_var.h)");
+// FIXME: disable for now, no idea how to fix this.
+//SYSCTL_VNET_PCPUSTAT(_net_inet_tcp, TCPCTL_STATS, stats, struct tcpstat,
+//    tcpstat, "TCP statistics (struct tcpstat, netinet/tcp_var.h)");
 VNET_DEFINE(counter_u64_t, tcps_states[TCP_NSTATES]);
 SYSCTL_COUNTER_U64_ARRAY(_net_inet_tcp, TCPCTL_STATES, states,
     CTLFLAG_RD | CTLFLAG_VNET, &VNET_NAME(tcps_states)[0], TCP_NSTATES,
@@ -784,61 +785,6 @@ tcp_input_with_port(struct mbuf **mp, int *offp, int proto, uint16_t port)
 	}
 #endif /* INET */
 
-	/* Might be a join. rough method for locating the mpcb and creating
-	 * a subflow to handle the incoming. This is used for implicit joins
-	 * (i.e. in cases where an inpcb has not been set up for an address
-	 * pair). Should have a sysctl that controls whether to allow implicit
-	 * joins. */
-	if ((thflags & TH_SYN) && !tried_join_locate) {
-		tcp_dooptions(&to, optp, optlen, TO_SYN);
-
-		/* Returns with mp locked. */
-		if (to.to_mopts.mpo_flags & MPOF_JOIN_SYN) {
-			struct mpcb *mp = NULL;
-
-			/* Might have pulled an inpcb out if joining to the
-			 * address bound as server (would match wildcard src)
-			 *
-			 * XXXNJW: but if the inpcb is pre-allocated, then we
-			 * don't want to override this. need to add a check to
-			 * make sure we don't ignore a valid inpcb and create
-			 * a new one for nothing. (or alternativley, could
-			 * never pre-alloc the inpcb for a subflow).
-			 */
-			if (inp) {
-				INP_WUNLOCK(inp);
-
-				/* XXXNJW a bit wasteful but do an exact lookup.
-				 * if we find an existing inpcb then drop. */
-				inp = in_pcblookup_mbuf(&V_tcbinfo, ip->ip_src,
-				    th->th_sport, ip->ip_dst, th->th_dport,
-				    INPLOOKUP_WLOCKPCB, m->m_pkthdr.rcvif, m);
-				if (inp) {
-					printf("%s: join on existing tuple\n",
-					    __func__);
-					goto dropunlock;
-				}
-			}
-			tried_join_locate = 1;
-			/* Retuns with MP locked */
-			mp = mp_locate_mpcb(to.to_mopts.rcv_token);
-
-			/* if it belongs to an existing mp connection, create a
-			 * new subflow, insert into has list then jump back to
-			 * findpcb. */
-			if (mp != NULL) {
-				int error_t = 0;
-				/* Drops the mp lock */
-				error_t = mp_create_subflow_implicit(mp,
-				    mp->mp_mppcb->mpp_socket, ip, th);
-				if (!error_t)
-					goto findpcb;
-			} else {
-				printf("%s: failed to locate mpcb\n", __func__);
-				goto dropwithreset;
-			}
-		}
-	}
 
 	/*
 	 * Check that TCP offset makes sense,
@@ -978,7 +924,62 @@ findpcb:
 		    INPLOOKUP_WILDCARD | INPLOOKUP_WLOCKPCB, m->m_pkthdr.rcvif,
 		    m);
 #endif /* INET */
+	
+	/* Might be a join. rough method for locating the mpcb and creating
+	 * a subflow to handle the incoming. This is used for implicit joins
+	 * (i.e. in cases where an inpcb has not been set up for an address
+	 * pair). Should have a sysctl that controls whether to allow implicit
+	 * joins. */
+	if ((thflags & TH_SYN) && !tried_join_locate) {
+		tcp_dooptions(&to, optp, optlen, TO_SYN);
 
+		/* Returns with mp locked. */
+		if (to.to_mopts.mpo_flags & MPOF_JOIN_SYN) {
+			struct mpcb *mp = NULL;
+
+			/* Might have pulled an inpcb out if joining to the
+			 * address bound as server (would match wildcard src)
+			 *
+			 * XXXNJW: but if the inpcb is pre-allocated, then we
+			 * don't want to override this. need to add a check to
+			 * make sure we don't ignore a valid inpcb and create
+			 * a new one for nothing. (or alternativley, could
+			 * never pre-alloc the inpcb for a subflow).
+			 */
+			if (inp) {
+				INP_WUNLOCK(inp);
+
+				/* XXXNJW a bit wasteful but do an exact lookup.
+				 * if we find an existing inpcb then drop. */
+				inp = in_pcblookup_mbuf(&V_tcbinfo, ip->ip_src,
+				    th->th_sport, ip->ip_dst, th->th_dport,
+				    INPLOOKUP_WLOCKPCB, m->m_pkthdr.rcvif, m);
+				if (inp) {
+					printf("%s: join on existing tuple\n",
+					    __func__);
+					goto dropunlock;
+				}
+			}
+			tried_join_locate = 1;
+			/* Retuns with MP locked */
+			mp = mp_locate_mpcb(to.to_mopts.rcv_token);
+
+			/* if it belongs to an existing mp connection, create a
+			 * new subflow, insert into has list then jump back to
+			 * findpcb. */
+			if (mp != NULL) {
+				int error_t = 0;
+				/* Drops the mp lock */
+				error_t = mp_create_subflow_implicit(mp,
+				    mp->mp_mppcb->mpp_socket, ip, th);
+				if (!error_t)
+					goto findpcb;
+			} else {
+				printf("%s: failed to locate mpcb\n", __func__);
+				goto dropwithreset;
+			}
+		}
+	}
 	/*
 	 * If the INPCB does not exist then all data in the incoming
 	 * segment is discarded and an appropriate RST is sent back.
@@ -1203,9 +1204,8 @@ findpcb:
 			 * contains.  tcp_do_segment() consumes
 			 * the mbuf chain and unlocks the inpcb.
 			 */
-			tcp_do_segment(m, th, so, tp, drop_hdrlen, tlen, iptos,
-			    ti_locked);
-			INP_INFO_UNLOCK_ASSERT(&V_tcbinfo);
+			tcp_do_segment(m, th, so, tp, drop_hdrlen, tlen, iptos);
+			INP_INFO_WUNLOCK_ASSERT(&V_tcbinfo);
 			return (IPPROTO_DONE);
 		}
 
@@ -1334,11 +1334,7 @@ findpcb:
 			if (error)
 				printf("%s: error %d\n", __func__, error);
 
-			if (ti_locked == TI_WLOCKED) {
-				INP_INFO_WUNLOCK(&V_tcbinfo);
-				ti_locked = TI_UNLOCKED;
-			}
-			INP_INFO_UNLOCK_ASSERT(&V_tcbinfo);
+			INP_INFO_WUNLOCK_ASSERT(&V_tcbinfo);
 			return (IPPROTO_DONE);
 		}
 
@@ -2017,7 +2013,7 @@ tcp_do_segment(struct mbuf *m, struct tcphdr *th, struct socket *so,
 				    m_tag_alloc(PACKET_COOKIE_MPTCP,
 					PACKET_TAG_DSN, DSN_TAG_LEN,
 					M_NOWAIT); // space for 64-bit DSN
-				struct m_tag *mtag = &dtag->tag;
+				struct m_tag *mtag = dtag->tag;
 
 				dtag->dsn = to.to_mopts.data_seq_num;
 				dtag->dss_flags |= MP_DFIN;
@@ -2263,7 +2259,7 @@ tcp_do_segment(struct mbuf *m, struct tcphdr *th, struct socket *so,
 		struct dsn_tag *dtag = (struct dsn_tag *)m_tag_alloc(
 		    PACKET_COOKIE_MPTCP, PACKET_TAG_DSN, DSN_TAG_LEN,
 		    M_NOWAIT); // space for 64-bit DSN
-		struct m_tag *mtag = &dtag->tag;
+		struct m_tag *mtag = dtag->tag;
 
 		/*
 		 * Convert 32bit DS map start sequence numbers into 64 bit.
@@ -2778,7 +2774,8 @@ tcp_do_segment(struct mbuf *m, struct tcphdr *th, struct socket *so,
 			 * if we end up appending segments at the data-level.
 			 */
 			m_adj(m, drop_hdrlen); /* delayed header drop */
-			thflags = tcp_reass(tp, th, &tlen, m);
+			tcp_seq temp = th->th_seq;
+			thflags = tcp_reass(tp, th, &temp, &tlen, m);
 
 			/* is there any new in-order data? */
 			if (tp->t_segq_received) {
@@ -4220,7 +4217,7 @@ dodata: /* XXX */
 		 * TCP reass checks for TCPS established and queues
 		 * pre-established segments that have len.
 		 */
-		if (th->th_seq == tp->rcv_nxt && tp->t_segq == NULL &&
+		if (th->th_seq == tp->rcv_nxt && SEGQ_EMPTY(tp) &&
 		    TCPS_HAVEESTABLISHED(tp->t_state)) {
 			TCPSTAT_INC(tcps_rcvpack);
 			TCPSTAT_ADD(tcps_rcvbyte, tlen);
@@ -4249,8 +4246,10 @@ dodata: /* XXX */
 		//		if (so->so_rcv.sb_state & SBS_CANTRCVMORE) {
 		//			m_freem(m);
 		//		} else {
-		if (tlen)
-			thflags = tcp_reass(tp, th, &tlen, m);
+		if (tlen){
+			tcp_seq temp = save_start;
+			thflags = tcp_reass(tp, th, &temp, &tlen, m);
+		}
 		else
 			thflags = th->th_flags & TH_FIN;
 		//		}

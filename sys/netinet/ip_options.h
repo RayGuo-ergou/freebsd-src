@@ -32,6 +32,7 @@
  *
  * $FreeBSD$
  */
+#include <netinet/ip_var.h>
 
 #ifndef _NETINET_IP_OPTIONS_H_
 #define	_NETINET_IP_OPTIONS_H_
